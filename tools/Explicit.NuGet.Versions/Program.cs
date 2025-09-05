@@ -15,21 +15,21 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Xml;
-using Ionic.Zip;
 
 namespace Explicit.NuGet.Versions
 {
 	class Program
 	{
-		static void Main(string[] args)
+		static void Main(string[] arguments)
 		{
-			var packageDiscoveryDirectory = Path.Combine(Environment.CurrentDirectory, args[0]);
+			var packageDiscoveryDirectory = Path.Combine(Environment.CurrentDirectory, arguments[0]);
 			var packageDiscoverDirectoryInfo = new DirectoryInfo(packageDiscoveryDirectory);
 			var packageMetaData = ReadNuspecFromPackages(packageDiscoverDirectoryInfo);
-			UpdateNuspecManifestContent(packageMetaData, args[1]);
+			UpdateNuspecManifestContent(packageMetaData, arguments[1]);
 			WriteNuspecToPackages(packageMetaData);
 		}
 
@@ -37,11 +37,38 @@ namespace Explicit.NuGet.Versions
 		{
 			foreach (var packageFile in packageMetaData.ToList())
 			{
-				using (var zipFile = ZipFile.Read(packageFile.Key))
+				var tempFile = Path.GetTempFileName();
+
+				using (var original = ZipFile.Open(packageFile.Key, ZipArchiveMode.Read))
+				using (var newArchive = ZipFile.Open(tempFile, ZipArchiveMode.Create))
 				{
-					zipFile.UpdateEntry(packageFile.Value.EntryName, packageFile.Value.Contents);
-					zipFile.Save();
+					foreach (var entry in original.Entries)
+					{
+						if (entry.FullName == packageFile.Value.EntryName)
+						{
+							// Remplace le .nuspec avec le contenu modifié
+							var newEntry = newArchive.CreateEntry(entry.FullName);
+							using (var writer = new StreamWriter(newEntry.Open(), Encoding.UTF8))
+							{
+								writer.Write(packageFile.Value.Contents);
+							}
+						}
+						else
+						{
+							// Copie les autres fichiers tels quels
+							var newEntry = newArchive.CreateEntry(entry.FullName, CompressionLevel.Optimal);
+							using (var source = entry.Open())
+							using (var dest = newEntry.Open())
+							{
+								source.CopyTo(dest);
+							}
+						}
+					}
 				}
+
+				// Remplace l’archive originale par la nouvelle
+				File.Delete(packageFile.Key);
+				File.Move(tempFile, packageFile.Key);
 			}
 		}
 
@@ -68,7 +95,8 @@ namespace Explicit.NuGet.Versions
 
 		private static void SetPackageDepencyVersionsToBeExplicitForXmlDocument(XmlDocument nuspecXmlDocument, string nugetIdFilter)
 		{
-			WalkDocumentNodes(nuspecXmlDocument.ChildNodes, node => {
+			WalkDocumentNodes(nuspecXmlDocument.ChildNodes, node =>
+			{
 				if (node.Name.ToLowerInvariant() == "dependency" && !string.IsNullOrEmpty(node.Attributes["id"].Value) && node.Attributes["id"].Value.ToLowerInvariant().StartsWith(nugetIdFilter))
 				{
 					var currentVersion = node.Attributes["version"].Value;
@@ -80,29 +108,25 @@ namespace Explicit.NuGet.Versions
 			});
 		}
 
-		internal class NuspecContentEntry
-		{
-			public string EntryName { get; set; }
-			public string Contents { get; set; }
-		}
-
 		private static Dictionary<string, NuspecContentEntry> ReadNuspecFromPackages(DirectoryInfo packageDiscoverDirectoryInfo)
 		{
 			var packageNuspecDictionary = new Dictionary<string, NuspecContentEntry>();
+
 			foreach (var packageFilePath in packageDiscoverDirectoryInfo.GetFiles("*.nupkg", SearchOption.AllDirectories))
 			{
-				using (var zipFile = ZipFile.Read(packageFilePath.FullName))
+				using (var archive = ZipFile.OpenRead(packageFilePath.FullName))
 				{
-					foreach (var zipEntry in zipFile.Entries)
+					foreach (var entry in archive.Entries)
 					{
-						if (zipEntry.FileName.ToLowerInvariant().EndsWith(".nuspec"))
+						if (entry.FullName.ToLowerInvariant().EndsWith(".nuspec"))
 						{
-							using (var zipEntryReader = new StreamReader(zipEntry.OpenReader()))
+							using (var reader = new StreamReader(entry.Open()))
 							{
-								var nuspecXml = zipEntryReader.ReadToEnd();
-								packageNuspecDictionary[packageFilePath.FullName] = new NuspecContentEntry {
+								var nuspecXml = reader.ReadToEnd();
+								packageNuspecDictionary[packageFilePath.FullName] = new NuspecContentEntry
+								{
 									Contents = nuspecXml,
-									EntryName = zipEntry.FileName
+									EntryName = entry.FullName
 								};
 								break;
 							}
@@ -121,21 +145,6 @@ namespace Explicit.NuGet.Versions
 				callback(node);
 				WalkDocumentNodes(node.ChildNodes, callback);
 			}
-		}
-	}
-
-	public sealed class StringWriterWithEncoding : StringWriter
-	{
-		private readonly Encoding encoding;
-
-		public StringWriterWithEncoding(Encoding encoding)
-		{
-			this.encoding = encoding;
-		}
-
-		public override Encoding Encoding
-		{
-			get { return encoding; }
 		}
 	}
 }
