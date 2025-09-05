@@ -26,6 +26,8 @@ namespace Explicit.NuGet.Versions
 	{
 		static void Main(string[] arguments)
 		{
+			// args[0] = dossier contenant les .nupkg
+			// args[1] = prefixe du package NuGet dont tu veux forcer la version explicite
 			var packageDiscoveryDirectory = Path.Combine(Environment.CurrentDirectory, arguments[0]);
 			var packageDiscoverDirectoryInfo = new DirectoryInfo(packageDiscoveryDirectory);
 			var packageMetaData = ReadNuspecFromPackages(packageDiscoverDirectoryInfo);
